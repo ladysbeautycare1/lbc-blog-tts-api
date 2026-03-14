@@ -1,18 +1,19 @@
 // =============================================================
-// BLOG TTS API — PRODUCTION READY WITH API KEY
+// BLOG TTS API — PRODUCTION READY WITH WORKLOAD IDENTITY
 // =============================================================
-// Enterprise-grade text-to-speech with caching
-// Simple, reliable, and secure authentication
+// Enterprise security: No API keys, temporary credentials only
+// Render-optimized WIF without executable complications
 //
 // Environment Variables (required):
 //   GOOGLE_PROJECT_ID: 913649475121
-//   GOOGLE_API_KEY: (stored as Secret in Render)
+//   GOOGLE_WORKLOAD_IDENTITY_PROVIDER: projects/913649475121/locations/global/workloadIdentityPools/lbc-render-pool/providers/render
 //   GOOGLE_DRIVE_FOLDER_ID: 1BBY-9sfGExHSLv_R2Y8Oznk5OMKhNDfl
 // =============================================================
 
 const express = require("express");
 const { TextToSpeechClient } = require("@google-cloud/text-to-speech");
 const { google } = require("googleapis");
+const { GoogleAuth } = require("google-auth-library");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const crypto = require("crypto");
@@ -78,32 +79,41 @@ async function initializeGoogleClients() {
 
   try {
     // Validate required environment variables
-    const required = ['GOOGLE_PROJECT_ID', 'GOOGLE_API_KEY', 'GOOGLE_DRIVE_FOLDER_ID'];
+    const required = ['GOOGLE_PROJECT_ID', 'GOOGLE_WORKLOAD_IDENTITY_PROVIDER', 'GOOGLE_DRIVE_FOLDER_ID'];
     const missing = required.filter(v => !process.env[v]);
     
     if (missing.length > 0) {
       throw new Error(`Missing environment variables: ${missing.join(', ')}`);
     }
 
-    logger.info('Initializing Google Cloud clients with API Key...');
+    logger.info('Initializing Google Cloud clients with Workload Identity Federation...');
 
-    // Initialize TTS client with API key
-    ttsClient = new TextToSpeechClient({
+    // Initialize auth with GoogleAuth (uses Application Default Credentials)
+    // On Render, this works with the GOOGLE_APPLICATION_CREDENTIALS env var
+    // or directly with the workload identity pool configuration
+    const auth = new GoogleAuth({
       projectId: process.env.GOOGLE_PROJECT_ID,
-      apiKey: process.env.GOOGLE_API_KEY
+      scopes: [
+        'https://www.googleapis.com/auth/cloud-platform',
+        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/texttospeech'
+      ]
     });
 
-    // Initialize Drive client with API key
+    // Initialize TTS client
+    ttsClient = new TextToSpeechClient({
+      projectId: process.env.GOOGLE_PROJECT_ID,
+      auth: auth
+    });
+
+    // Initialize Drive client
     driveClient = google.drive({
       version: 'v3',
-      auth: new (require('google-auth-library')).GoogleAuth({
-        apiKey: process.env.GOOGLE_API_KEY,
-        projectId: process.env.GOOGLE_PROJECT_ID
-      })
+      auth: auth
     });
 
     googleAuthInitialized = true;
-    logger.info('✓ Google Cloud clients initialized with API Key');
+    logger.info('✓ Google Cloud clients initialized with Workload Identity Federation');
   } catch (error) {
     logger.error('Failed to initialize Google clients', error);
     throw error;
@@ -175,7 +185,6 @@ async function findAudioInDrive(cacheKey) {
       spaces: 'drive',
       fields: 'files(id, name, webContentLink, createdTime)',
       pageSize: 1,
-      key: process.env.GOOGLE_API_KEY
     });
 
     if (response.data.files && response.data.files.length > 0) {
@@ -255,7 +264,6 @@ async function uploadAudioToDrive(cacheKey, audioBuffer) {
         body: audioBuffer,
       },
       fields: 'id, webContentLink, createdTime, size',
-      key: process.env.GOOGLE_API_KEY
     });
 
     logger.info('✓ Audio uploaded to Drive', { 
@@ -468,6 +476,7 @@ process.on('SIGINT', () => {
 const server = app.listen(PORT, () => {
   logger.info(`✓ Blog TTS API listening on port ${PORT}`);
   logger.info(`✓ Environment: ${NODE_ENV}`);
+  logger.info(`✓ Security: Workload Identity Federation`);
   logger.info(`✓ Ready to accept requests`);
   
   // Initialize Google clients on startup
