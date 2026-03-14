@@ -1,0 +1,21 @@
+{
+  "name": "lbc-blog-tts-api",
+  "version": "1.0.0",
+  "description": "Secure blog Text-to-Speech API with Google Cloud TTS and Drive caching",
+  "main": "src/api/blog-tts-api.js",
+  "scripts": {
+    "start": "node src/api/blog-tts-api.js",
+    "dev": "node src/api/blog-tts-api.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@google-cloud/text-to-speech": "^5.1.0",
+    "googleapis": "^118.0.0",
+    "google-auth-library": "^9.0.0",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
