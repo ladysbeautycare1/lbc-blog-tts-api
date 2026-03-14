@@ -1,11 +1,6 @@
 /**
  * Blog TTS API - Cloudflare Workers
- * Enterprise-grade text-to-speech with WIF
- * 
- * Environment Variables (required):
- *   GOOGLE_PROJECT_ID
- *   GOOGLE_WORKLOAD_IDENTITY_PROVIDER
- *   GOOGLE_DRIVE_FOLDER_ID
+ * Production-ready with Workload Identity Federation
  */
 
 import { GoogleAuth } from 'google-auth-library';
@@ -13,116 +8,53 @@ import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { google } from 'googleapis';
 import crypto from 'crypto';
 
-// ─── ENVIRONMENT ───────────────────────────────────────
-let ENV = null;
+// ─── LOGGER ───────────────────────────────────────────
+const log = {
+  info: (msg, data) => console.log(`[INFO] ${msg}`, data || ''),
+  error: (msg, err) => console.error(`[ERROR] ${msg}`, err?.message || err),
+  warn: (msg, data) => console.warn(`[WARN] ${msg}`, data || '')
+};
 
-function initializeENV(env) {
-  if (ENV) return;
-  
-  ENV = {
-    PROJECT_ID: env.GOOGLE_PROJECT_ID,
-    WIF_PROVIDER: env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER,
-    DRIVE_FOLDER_ID: env.GOOGLE_DRIVE_FOLDER_ID,
-  };
-}
-
-// ─── VALIDATE ENV ──────────────────────────────────────
-function validateEnv() {
-  const required = ['PROJECT_ID', 'WIF_PROVIDER', 'DRIVE_FOLDER_ID'];
-  const missing = required.filter(k => !ENV[k]);
-  
-  if (missing.length > 0) {
-    throw new Error(`Missing env vars: ${missing.join(', ')}`);
-  }
-}
-
-// ─── GOOGLE CLIENTS (CACHED) ───────────────────────────
-let authClient = null;
-let ttsClient = null;
-let driveClient = null;
-
-async function initializeClients() {
-  if (authClient && ttsClient && driveClient) {
-    return;
-  }
-
-  validateEnv();
-
-  try {
-    // Create auth with WIF
-    authClient = new GoogleAuth({
-      projectId: ENV.PROJECT_ID,
-      scopes: [
-        'https://www.googleapis.com/auth/cloud-platform',
-        'https://www.googleapis.com/auth/drive.file',
-        'https://www.googleapis.com/auth/texttospeech'
-      ]
-    });
-
-    ttsClient = new TextToSpeechClient({
-      projectId: ENV.PROJECT_ID,
-      auth: authClient
-    });
-
-    driveClient = google.drive({
-      version: 'v3',
-      auth: authClient
-    });
-
-    console.log('✓ Google Cloud clients initialized with WIF');
-  } catch (error) {
-    console.error('Failed to initialize clients:', error.message);
-    throw error;
-  }
-}
+// ─── CORS HEADERS ──────────────────────────────────────
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 
 // ─── FETCH BLOG CONTENT ────────────────────────────────
 async function fetchBlogContent(blogUrl) {
-  try {
-    const response = await fetch(blogUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-      }
-    });
+  const response = await fetch(blogUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+  });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-    const html = await response.text();
-    
-    // Simple HTML parsing (Cloudflare Workers don't have cheerio, so we use regex)
-    // Remove scripts, styles, nav, footer
-    let content = html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-      .replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, '')
-      .replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, '');
+  const html = await response.text();
+  
+  // Remove scripts, styles, nav, footer
+  let content = html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, '')
+    .replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, '');
 
-    // Extract text from main content areas
-    const mainMatch = content.match(/<(article|main|div[^>]*class="[^"]*content[^"]*"[^>]*)>(.+?)<\/\1>/is);
-    if (mainMatch) {
-      content = mainMatch[2];
-    }
+  // Extract main content
+  const mainMatch = content.match(/<(article|main|div[^>]*class="[^"]*content[^"]*"[^>]*)>(.+?)<\/\1>/is);
+  if (mainMatch) content = mainMatch[2];
 
-    // Strip HTML tags
-    content = content
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .substring(0, 4500); // Limit for TTS API
+  // Strip HTML and limit
+  content = content
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 4500);
 
-    if (content.length < 100) {
-      throw new Error('Insufficient content extracted');
-    }
-
-    return content;
-  } catch (error) {
-    throw new Error(`Failed to fetch blog: ${error.message}`);
-  }
+  if (content.length < 100) throw new Error('Insufficient content');
+  return content;
 }
 
-// ─── GENERATE CACHE KEY ────────────────────────────────
+// ─── GENERATE CACHE KEY ───────────────────────────────
 function generateCacheKey(blogPostId, content) {
   const hash = crypto
     .createHash('sha256')
@@ -132,13 +64,32 @@ function generateCacheKey(blogPostId, content) {
   return `lbc-blog-audio-${blogPostId}-${hash}.mp3`;
 }
 
-// ─── FIND AUDIO IN DRIVE ───────────────────────────────
-async function findAudioInDrive(cacheKey) {
-  try {
-    await initializeClients();
+// ─── INITIALIZE GOOGLE CLIENTS ─────────────────────────
+async function initializeClients(env) {
+  const auth = new GoogleAuth({
+    projectId: env.GOOGLE_PROJECT_ID,
+    scopes: [
+      'https://www.googleapis.com/auth/cloud-platform',
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/texttospeech'
+    ]
+  });
 
+  const ttsClient = new TextToSpeechClient({
+    projectId: env.GOOGLE_PROJECT_ID,
+    auth
+  });
+
+  const driveClient = google.drive({ version: 'v3', auth });
+
+  return { ttsClient, driveClient, env };
+}
+
+// ─── FIND AUDIO IN DRIVE ───────────────────────────────
+async function findAudioInDrive(driveClient, env, cacheKey) {
+  try {
     const response = await driveClient.files.list({
-      q: `name="${cacheKey}" and "${ENV.DRIVE_FOLDER_ID}" in parents and trashed=false`,
+      q: `name="${cacheKey}" and "${env.GOOGLE_DRIVE_FOLDER_ID}" in parents and trashed=false`,
       spaces: 'drive',
       fields: 'files(id, name, webContentLink, createdTime)',
       pageSize: 1,
@@ -146,8 +97,7 @@ async function findAudioInDrive(cacheKey) {
 
     if (response.data.files && response.data.files.length > 0) {
       const file = response.data.files[0];
-      console.log(`✓ Cache hit: ${cacheKey}`);
-      
+      log.info(`✓ Cache hit: ${cacheKey}`);
       return {
         fileId: file.id,
         fileName: file.name,
@@ -155,112 +105,76 @@ async function findAudioInDrive(cacheKey) {
         createdTime: file.createdTime
       };
     }
-
     return null;
   } catch (error) {
-    console.warn(`Cache lookup failed: ${error.message}`);
+    log.warn('Cache lookup failed', error);
     return null;
   }
 }
 
 // ─── SYNTHESIZE SPEECH ─────────────────────────────────
-async function synthesizeSpeech(text) {
-  try {
-    await initializeClients();
+async function synthesizeSpeech(ttsClient, text) {
+  const request = {
+    input: { text },
+    voice: {
+      languageCode: 'en-AU',
+      name: 'en-AU-Neural2-C',
+      ssmlGender: 'FEMALE',
+    },
+    audioConfig: {
+      audioEncoding: 'MP3',
+      speakingRate: 0.95,
+      pitch: 0.0,
+      volumeGainDb: 0.0,
+    },
+  };
 
-    const request = {
-      input: { text: text },
-      voice: {
-        languageCode: 'en-AU',
-        name: 'en-AU-Neural2-C',
-        ssmlGender: 'FEMALE',
-      },
-      audioConfig: {
-        audioEncoding: 'MP3',
-        speakingRate: 0.95,
-        pitch: 0.0,
-        volumeGainDb: 0.0,
-      },
-    };
-
-    const [response] = await ttsClient.synthesizeSpeech(request);
-
-    if (!response.audioContent) {
-      throw new Error('No audio content returned');
-    }
-
-    console.log(`✓ Audio synthesized: ${response.audioContent.length} bytes`);
-    return response.audioContent;
-  } catch (error) {
-    throw new Error(`TTS synthesis failed: ${error.message}`);
-  }
+  const [response] = await ttsClient.synthesizeSpeech(request);
+  if (!response.audioContent) throw new Error('No audio content');
+  
+  log.info(`✓ Audio synthesized: ${response.audioContent.length} bytes`);
+  return response.audioContent;
 }
 
 // ─── UPLOAD TO DRIVE ───────────────────────────────────
-async function uploadAudioToDrive(cacheKey, audioBuffer) {
-  try {
-    await initializeClients();
+async function uploadAudioToDrive(driveClient, env, cacheKey, audioBuffer) {
+  const file = {
+    name: cacheKey,
+    parents: [env.GOOGLE_DRIVE_FOLDER_ID],
+    description: `LBC Blog Audio - ${new Date().toISOString()}`,
+    mimeType: 'audio/mpeg'
+  };
 
-    const file = {
-      name: cacheKey,
-      parents: [ENV.DRIVE_FOLDER_ID],
-      description: `LBC Blog Audio - ${new Date().toISOString()}`,
-      mimeType: 'audio/mpeg'
-    };
+  const { data } = await driveClient.files.create({
+    resource: file,
+    media: {
+      mimeType: 'audio/mpeg',
+      body: audioBuffer,
+    },
+    fields: 'id, webContentLink, createdTime, size',
+  });
 
-    const response = await driveClient.files.create({
-      resource: file,
-      media: {
-        mimeType: 'audio/mpeg',
-        body: audioBuffer,
-      },
-      fields: 'id, webContentLink, createdTime, size',
-    });
-
-    console.log(`✓ Audio uploaded: ${response.data.id}`);
-
-    return {
-      fileId: response.data.id,
-      fileName: cacheKey,
-      downloadLink: response.data.webContentLink,
-      createdTime: response.data.createdTime,
-      size: response.data.size
-    };
-  } catch (error) {
-    throw new Error(`Drive upload failed: ${error.message}`);
-  }
-}
-
-// ─── INPUT VALIDATION ──────────────────────────────────
-function validateInput(blogPostId, blogUrl, blogContent) {
-  const errors = [];
-
-  if (!blogPostId || typeof blogPostId !== 'string') {
-    errors.push('blogPostId required');
-  }
-
-  if (!blogUrl && !blogContent) {
-    errors.push('blogUrl or blogContent required');
-  }
-
-  if (blogContent && blogContent.length < 100) {
-    errors.push('blogContent must be 100+ chars');
-  }
-
-  return errors;
-}
-
-// ─── CORS HEADERS ──────────────────────────────────────
-function corsHeaders() {
+  log.info(`✓ Audio uploaded: ${data.id}`);
   return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    fileId: data.id,
+    fileName: cacheKey,
+    downloadLink: data.webContentLink,
+    createdTime: data.createdTime,
+    size: data.size
   };
 }
 
-// ─── MAIN ENDPOINT ─────────────────────────────────────
-async function handleReadAloud(request) {
+// ─── VALIDATE INPUT ───────────────────────────────────
+function validateInput(blogPostId, blogUrl, blogContent) {
+  const errors = [];
+  if (!blogPostId) errors.push('blogPostId required');
+  if (!blogUrl && !blogContent) errors.push('blogUrl or blogContent required');
+  if (blogContent && blogContent.length < 100) errors.push('blogContent must be 100+ chars');
+  return errors;
+}
+
+// ─── MAIN HANDLER ──────────────────────────────────────
+async function handleReadAloud(request, env) {
   const requestId = crypto.randomBytes(4).toString('hex');
   const startTime = Date.now();
 
@@ -278,11 +192,14 @@ async function handleReadAloud(request) {
         requestId
       }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
     }
 
-    console.log(`[${requestId}] Processing: ${blogPostId}`);
+    log.info(`[${requestId}] Processing: ${blogPostId}`);
+
+    // Initialize clients
+    const { ttsClient, driveClient } = await initializeClients(env);
 
     // Fetch content if needed
     let content = blogContent;
@@ -292,10 +209,10 @@ async function handleReadAloud(request) {
 
     // Generate cache key
     const cacheKey = generateCacheKey(blogPostId, content);
-    console.log(`[${requestId}] Cache key: ${cacheKey}`);
+    log.info(`[${requestId}] Cache key: ${cacheKey}`);
 
     // Check cache
-    const cached = await findAudioInDrive(cacheKey);
+    const cached = await findAudioInDrive(driveClient, env, cacheKey);
     if (cached) {
       const duration = Date.now() - startTime;
       return new Response(JSON.stringify({
@@ -309,20 +226,20 @@ async function handleReadAloud(request) {
         duration
       }), {
         status: 200,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
     }
 
     // Generate audio
-    console.log(`[${requestId}] Generating audio`);
-    const audioBuffer = await synthesizeSpeech(content);
+    log.info(`[${requestId}] Generating audio`);
+    const audioBuffer = await synthesizeSpeech(ttsClient, content);
 
     // Upload
-    console.log(`[${requestId}] Uploading to Drive`);
-    const uploaded = await uploadAudioToDrive(cacheKey, audioBuffer);
+    log.info(`[${requestId}] Uploading to Drive`);
+    const uploaded = await uploadAudioToDrive(driveClient, env, cacheKey, audioBuffer);
 
     const duration = Date.now() - startTime;
-    console.log(`[${requestId}] Complete: ${duration}ms`);
+    log.info(`[${requestId}] Complete: ${duration}ms`);
 
     return new Response(JSON.stringify({
       success: true,
@@ -336,12 +253,12 @@ async function handleReadAloud(request) {
       duration
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
 
   } catch (error) {
     const duration = Date.now() - startTime;
-    console.error(`[${requestId}] Error: ${error.message}`);
+    log.error(`[${requestId}] Error`, error);
 
     return new Response(JSON.stringify({
       success: false,
@@ -350,25 +267,23 @@ async function handleReadAloud(request) {
       duration
     }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   }
 }
 
 // ─── HEALTH CHECK ─────────────────────────────────────
-async function handleHealth(request) {
+async function handleHealth(env) {
   try {
-    await initializeClients();
-    
+    await initializeClients(env);
     return new Response(JSON.stringify({
       status: 'healthy',
       service: 'LBC Blog TTS API',
-      version: '1.0.0',
       platform: 'Cloudflare Workers',
       timestamp: new Date().toISOString()
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
     return new Response(JSON.stringify({
@@ -376,54 +291,47 @@ async function handleHealth(request) {
       error: error.message
     }), {
       status: 503,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   }
 }
 
 // ─── ROOT ─────────────────────────────────────────────
-function handleRoot(request) {
+function handleRoot() {
   return new Response(JSON.stringify({
     service: 'LBC Blog TTS API',
     platform: 'Cloudflare Workers',
-    version: '1.0.0',
     endpoints: {
       health: 'GET /api/blog/health',
       readAloud: 'POST /api/blog/read-aloud'
     }
   }), {
     status: 200,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+    headers: { 'Content-Type': 'application/json', ...corsHeaders }
   });
 }
 
-// ─── ROUTER ───────────────────────────────────────────
+// ─── MAIN EXPORT ───────────────────────────────────────
 export default {
-  async fetch(request, env, ctx) {
-    // Initialize ENV from Cloudflare bindings
-    initializeENV(env);
-
+  async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Handle CORS preflight
+    // CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response('OK', {
-        status: 204,
-        headers: corsHeaders()
-      });
+      return new Response('OK', { status: 204, headers: corsHeaders });
     }
 
     // Routes
     if (url.pathname === '/') {
-      return handleRoot(request);
+      return handleRoot();
     }
 
     if (url.pathname === '/api/blog/health' && request.method === 'GET') {
-      return await handleHealth(request);
+      return await handleHealth(env);
     }
 
     if (url.pathname === '/api/blog/read-aloud' && request.method === 'POST') {
-      return await handleReadAloud(request);
+      return await handleReadAloud(request, env);
     }
 
     // 404
@@ -432,7 +340,7 @@ export default {
       path: url.pathname
     }), {
       status: 404,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   }
 };
