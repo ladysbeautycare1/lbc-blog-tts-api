@@ -256,7 +256,7 @@ export default {
         }
 
         const serviceAccountJSON = JSON.parse(env.GOOGLE_SERVICE_ACCOUNT_JSON);
-        const driveFolderId = env.GOOGLE_DRIVE_FOLDER_ID;
+        const driveFolderId = env.GOOGLE_DRIVE_FOLDER_ID.trim();
         const accessToken = await getAccessToken(serviceAccountJSON);
 
         let content = blogContent;
