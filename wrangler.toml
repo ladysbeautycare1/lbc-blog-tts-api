@@ -3,9 +3,22 @@ main = "index.js"
 compatibility_date = "2024-12-16"
 compatibility_flags = ["nodejs_compat"]
 
+account_id = "0ae9944f1896b22fa1aa89acbed7b86b"
+workers_dev = true
+
+[build]
+command = "npm install"
+cwd = "./"
+
 [vars]
 GOOGLE_PROJECT_ID = "913649475121"
 GOOGLE_DRIVE_FOLDER_ID = "1BBY-9sfGExHSLv_R2Y8Oznk5OMKhNDfl"
 
 [env.production]
-vars = { GOOGLE_API_KEY = "$GOOGLE_API_KEY" }
+vars = { GOOGLE_SERVICE_ACCOUNT_JSON = "$GOOGLE_SERVICE_ACCOUNT_JSON" }
+routes = [
+  { pattern = "lbc-blog-tts-api.ladysbeautycare.workers.dev/*", zone_name = "ladysbeautycare.com.au" }
+]
+
+[observability]
+enabled = true
