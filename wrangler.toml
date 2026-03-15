@@ -10,8 +10,5 @@ workers_dev = true
 GOOGLE_PROJECT_ID = "913649475121"
 GOOGLE_DRIVE_FOLDER_ID = "1BBY-9sfGExHSLv_R2Y8Uznk5OMKhNDfl"
 
-[[env.production.secrets]]
-name = "GOOGLE_SERVICE_ACCOUNT_JSON"
-
 [observability]
 enabled = true
