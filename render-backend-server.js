@@ -1,6 +1,6 @@
 /**
- * LBC Blog TTS - Render Backend (Final Clean Version)
- * Removes titles/subtitles before processing - reads ONLY main content
+ * LBC Blog TTS - Render Backend (Optimized Streaming)
+ * Generates and returns audio chunks immediately as they're ready
  */
 
 const express = require('express');
@@ -46,39 +46,46 @@ function splitIntoChunks(text, maxSize = 2000) {
   const chunks = [];
   let current = '';
 
-  // REMOVE TITLES AND SUBTITLES - Don't read them
-  // This removes lines that look like titles/subtitles
-  let cleanedText = text
-    // Remove all-caps titles (like "PCOS & HAIR GROWTH")
-    .replace(/^[A-Z][A-Z\s]{10,100}$/gm, '')
-    // Remove Title Case lines (short lines that are titles)
-    .replace(/^([A-Z][a-z]*(?:\s+[A-Z][a-z]*)*){2,}$/gm, '')
-    // Remove single sentence lines that are too short (likely titles)
-    .replace(/^[A-Z][^.!?]{5,80}$/gm, '')
-    // Clean up extra newlines left behind
-    .replace(/\n\n+/g, '\n\n')
-    .trim();
+  // FIRST: Split on major sections (titles/subtitles followed by content)
+  // Detect lines that are titles/subtitles (short, all caps or title case at start of line)
+  const sections = text.split(/\n(?=[A-Z][A-Za-z\s]{3,80}(?:\n|$))/);
 
-  // Split by sentences
-  const sentences = cleanedText.match(/[^.!?]*[.!?]+/g) || [cleanedText];
+  for (const section of sections) {
+    if (!section.trim()) continue;
 
-  for (const sentence of sentences) {
-    const trimmed = sentence.trim();
-    if (!trimmed || trimmed.length < 20) continue;
+    // WITHIN each section: split by sentences
+    const sentences = section.match(/[^.!?]*[.!?]+/g) || [section];
 
-    if (current.length + trimmed.length > maxSize && current.length > 0) {
-      chunks.push(current.trim());
-      current = trimmed;
-    } else {
-      current += (current ? ' ' : '') + trimmed;
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
+      if (!trimmed) continue;
+
+      // If adding this sentence would exceed maxSize, start a new chunk
+      if (current.length + trimmed.length > maxSize && current.length > 0) {
+        chunks.push(current.trim());
+        current = trimmed;
+      } else {
+        current += (current ? ' ' : '') + trimmed;
+      }
     }
+
+    // End of section - if there's content, add it as a chunk
+    if (current.trim()) {
+      chunks.push(current.trim());
+      current = '';
+    }
+
+    // ADD A PAUSE BETWEEN SECTIONS (empty chunk creates 2 second gap)
+    // This forces the frontend to pause between title/subtitle and content
+    chunks.push('[PAUSE_2000ms]');
   }
 
-  if (current.trim()) {
-    chunks.push(current.trim());
+  // Remove trailing pause
+  if (chunks.length > 0 && chunks[chunks.length - 1] === '[PAUSE_2000ms]') {
+    chunks.pop();
   }
 
-  console.log(`📄 Split into ${chunks.length} chunks (titles/subtitles removed)`);
+  console.log(`📄 Split into ${chunks.length} chunks (including pauses)`);
   return chunks;
 }
 
@@ -89,28 +96,40 @@ function textToSSML(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-  // STRONG BREAK AT VERY BEGINNING (after title)
-  ssml = ssml.replace(/^([^\n]+)\n([^\n]+)\n/, '$1<break strength="x-strong" time="2000ms"/>\n$2<break strength="x-strong" time="2000ms"/>\n');
+  // TITLE BREAKS - Add strong pause before titles (short lines at start or after paragraphs)
+  ssml = ssml.replace(/^([A-Z][A-Za-z0-9\s]{5,60})(\n+)/gm, '<break strength="x-strong" time="1500ms"/>$1<break strength="strong" time="1000ms"/>\n');
 
-  // PARAGRAPH BREAKS
+  // SUBTITLE BREAKS - Add pause before subtitles (indented or after title)
+  ssml = ssml.replace(/\n([A-Z][A-Za-z0-9\s]{5,60})(\n+)/gm, '\n<break strength="strong" time="1200ms"/>$1<break strength="medium" time="800ms"/>\n');
+
+  // PARAGRAPH BREAKS - Long pause between paragraphs
   ssml = ssml.replace(/\n\n+/g, '<break strength="strong" time="1500ms"/>');
 
-  // SENTENCE ENDINGS
-  ssml = ssml.replace(/([.!?])(\s+)(?=[A-Z])/g, '$1<break strength="medium" time="800ms"/>$2');
+  // BULLET POINT BREAKS - Pause before bullet points
+  ssml = ssml.replace(/\n([-•*])/g, '<break strength="strong" time="1000ms"/>\n$1');
 
-  // COMMA PAUSES
-  ssml = ssml.replace(/,(\s+)/g, ',<break time="300ms"/>$1');
+  // BULLET POINT END BREAKS - Pause after each bullet point
+  ssml = ssml.replace(/([-•*][^\n]+)\n/g, '$1<break strength="medium" time="800ms"/>\n');
+
+  // COLON BREAKS - Medium pause after colons (before lists/explanations)
+  ssml = ssml.replace(/(:)(\s+)/g, '$1<break strength="medium" time="800ms"/>$2');
+
+  // SENTENCE ENDINGS - Pause AFTER period, exclamation, question mark
+  ssml = ssml.replace(/([.!?])(\s+)(?=[A-Z])/g, '$1<break strength="medium" time="800ms"/>$2');
+  ssml = ssml.replace(/([.!?])(\s+)(?=[a-z])/g, '$1<break time="400ms"/>$2');
+
+  // COMMA PAUSES - Slight pause at commas
+  ssml = ssml.replace(/,(\s+)/g, ',<break time="250ms"/>$1');
+
+  // SEMICOLON PAUSES - Medium pause
+  ssml = ssml.replace(/;(\s+)/g, ';<break strength="medium" time="600ms"/>$1');
 
   return `<speak>${ssml}</speak>`;
 }
 
+
 async function synthesizeChunk(text, chunkIndex) {
   try {
-    if (!text || text.trim().length === 0) {
-      console.log(`⏭️  Chunk ${chunkIndex}: Empty, skipping`);
-      return Buffer.from('');
-    }
-
     const ssml = textToSSML(text);
     const ssmlSize = Buffer.byteLength(ssml, 'utf8');
 
@@ -139,19 +158,22 @@ async function synthesizeChunk(text, chunkIndex) {
   }
 }
 
+// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'LBC Blog TTS Render Backend',
-    version: '3.1.0',
+    version: '3.0.0',
   });
 });
 
+// OPTIMIZED: Generate audio endpoint with streaming response
 app.post('/api/blog/generate-audio', async (req, res) => {
   const startTime = Date.now();
 
   try {
     const { blogContent, blogText, blogUrl, blogPostId } = req.body;
+
     const textContent = blogContent || blogText;
 
     if (!textContent && !blogUrl) {
@@ -197,14 +219,14 @@ app.post('/api/blog/generate-audio', async (req, res) => {
     const chunks = splitIntoChunks(content, 2000);
     console.log(`🎙️  Generating ${chunks.length} audio chunks...\n`);
 
-    // Generate chunks IN PARALLEL for speed
+    // OPTIMIZATION: Generate chunks in PARALLEL (not sequential)
     const audioChunks = [];
     const synthPromises = chunks.map((chunk, index) =>
       synthesizeChunk(chunk, index)
         .then(audioBuffer => {
           audioChunks[index] = {
             index: index,
-            audioBase64: audioBuffer.length > 0 ? audioBuffer.toString('base64') : '',
+            audioBase64: audioBuffer.toString('base64'),
             textLength: chunk.length,
           };
           console.log(`✅ Chunk ${index + 1}/${chunks.length} ready`);
@@ -215,19 +237,18 @@ app.post('/api/blog/generate-audio', async (req, res) => {
         })
     );
 
+    // Wait for all chunks in parallel
     await Promise.all(synthPromises);
 
-    // Sort to ensure correct order
+    // Sort to ensure correct order (in case they finish out of order)
     audioChunks.sort((a, b) => a.index - b.index);
-    // Filter out empty chunks
-    const validChunks = audioChunks.filter(c => c.audioBase64);
 
-    console.log(`\n✅ All ${validChunks.length} chunks generated in ${Date.now() - startTime}ms\n`);
+    console.log(`\n✅ All ${audioChunks.length} chunks generated in ${Date.now() - startTime}ms\n`);
 
     res.json({
       success: true,
-      audioChunks: validChunks,
-      totalChunks: validChunks.length,
+      audioChunks: audioChunks,
+      totalChunks: audioChunks.length,
       totalChars: content.length,
       generationTime: Date.now() - startTime,
     });
@@ -246,7 +267,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await initializeGoogle();
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 LBC Blog TTS Render Backend v3.1 running on port ${PORT}`);
+    console.log(`\n🚀 LBC Blog TTS Render Backend v3.0 running on port ${PORT}`);
     console.log(`📍 Health: http://localhost:${PORT}/health`);
     console.log(`📍 Generate: POST http://localhost:${PORT}/api/blog/generate-audio\n`);
   });
