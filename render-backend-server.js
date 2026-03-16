@@ -46,24 +46,46 @@ function splitIntoChunks(text, maxSize = 2000) {
   const chunks = [];
   let current = '';
 
-  const sentences = text.match(/[^.!?]*[.!?]+/g) || [text];
+  // FIRST: Split on major sections (titles/subtitles followed by content)
+  // Detect lines that are titles/subtitles (short, all caps or title case at start of line)
+  const sections = text.split(/\n(?=[A-Z][A-Za-z\s]{3,80}(?:\n|$))/);
 
-  for (const sentence of sentences) {
-    const trimmed = sentence.trim();
-    if (!trimmed) continue;
+  for (const section of sections) {
+    if (!section.trim()) continue;
 
-    if (current.length + trimmed.length > maxSize && current.length > 0) {
-      chunks.push(current.trim());
-      current = trimmed;
-    } else {
-      current += (current ? ' ' : '') + trimmed;
+    // WITHIN each section: split by sentences
+    const sentences = section.match(/[^.!?]*[.!?]+/g) || [section];
+
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
+      if (!trimmed) continue;
+
+      // If adding this sentence would exceed maxSize, start a new chunk
+      if (current.length + trimmed.length > maxSize && current.length > 0) {
+        chunks.push(current.trim());
+        current = trimmed;
+      } else {
+        current += (current ? ' ' : '') + trimmed;
+      }
     }
+
+    // End of section - if there's content, add it as a chunk
+    if (current.trim()) {
+      chunks.push(current.trim());
+      current = '';
+    }
+
+    // ADD A PAUSE BETWEEN SECTIONS (empty chunk creates 2 second gap)
+    // This forces the frontend to pause between title/subtitle and content
+    chunks.push('[PAUSE_2000ms]');
   }
 
-  if (current.trim()) {
-    chunks.push(current.trim());
+  // Remove trailing pause
+  if (chunks.length > 0 && chunks[chunks.length - 1] === '[PAUSE_2000ms]') {
+    chunks.pop();
   }
 
+  console.log(`📄 Split into ${chunks.length} chunks (including pauses)`);
   return chunks;
 }
 
