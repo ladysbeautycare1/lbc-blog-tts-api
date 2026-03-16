@@ -1,6 +1,6 @@
 /**
  * LBC Blog TTS - Render Backend (Optimized Streaming)
- * Generates and returns audio chunks immediately as they're ready
+ * IMPROVED: % reads as percent, breaks after titles/subtitles/bullets
  */
 
 const express = require('express');
@@ -91,38 +91,33 @@ function splitIntoChunks(text, maxSize = 2000) {
 
 function textToSSML(text) {
   let ssml = text
+    // FIRST: Replace special characters with words BEFORE XML escaping
+    .replace(/%/g, ' percent ')
+    .replace(/\$/g, ' dollar ')
+    .replace(/#/g, ' number ')
+    // NOW: Escape XML special chars
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-  // TITLE BREAKS - Add strong pause before titles (short lines at start or after paragraphs)
-  ssml = ssml.replace(/^([A-Z][A-Za-z0-9\s]{5,60})(\n+)/gm, '<break strength="x-strong" time="1500ms"/>$1<break strength="strong" time="1000ms"/>\n');
+  // TITLE BREAKS - Add strong pause AFTER titles (first line)
+  ssml = ssml.replace(/^([A-Z][A-Za-z0-9\s]{5,80})(\n)/gm, '$1<break strength="x-strong" time="1500ms"/>\n');
 
-  // SUBTITLE BREAKS - Add pause before subtitles (indented or after title)
-  ssml = ssml.replace(/\n([A-Z][A-Za-z0-9\s]{5,60})(\n+)/gm, '\n<break strength="strong" time="1200ms"/>$1<break strength="medium" time="800ms"/>\n');
+  // SUBTITLE BREAKS - Add pause AFTER subtitles (second line)
+  ssml = ssml.replace(/^([A-Z][A-Za-z0-9\s]{5,80})(\n)(?=[A-Z])/gm, '$1<break strength="strong" time="1200ms"/>\n');
+
+  // BULLET POINT BREAKS - Pause AFTER each bullet point
+  ssml = ssml.replace(/([-•*][^\n]+)(\n)/gm, '$1<break strength="medium" time="800ms"/>$2');
 
   // PARAGRAPH BREAKS - Long pause between paragraphs
-  ssml = ssml.replace(/\n\n+/g, '<break strength="strong" time="1500ms"/>');
+  ssml = ssml.replace(/\n\n+/g, '<break strength="strong" time="1000ms"/>');
 
-  // BULLET POINT BREAKS - Pause before bullet points
-  ssml = ssml.replace(/\n([-•*])/g, '<break strength="strong" time="1000ms"/>\n$1');
-
-  // BULLET POINT END BREAKS - Pause after each bullet point
-  ssml = ssml.replace(/([-•*][^\n]+)\n/g, '$1<break strength="medium" time="800ms"/>\n');
-
-  // COLON BREAKS - Medium pause after colons (before lists/explanations)
-  ssml = ssml.replace(/(:)(\s+)/g, '$1<break strength="medium" time="800ms"/>$2');
-
-  // SENTENCE ENDINGS - Pause AFTER period, exclamation, question mark
-  ssml = ssml.replace(/([.!?])(\s+)(?=[A-Z])/g, '$1<break strength="medium" time="800ms"/>$2');
-  ssml = ssml.replace(/([.!?])(\s+)(?=[a-z])/g, '$1<break time="400ms"/>$2');
+  // SENTENCE ENDINGS - Pause after period, exclamation, question mark
+  ssml = ssml.replace(/([.!?])(\s+)(?=[A-Z])/g, '$1<break time="600ms"/>$2');
 
   // COMMA PAUSES - Slight pause at commas
   ssml = ssml.replace(/,(\s+)/g, ',<break time="250ms"/>$1');
-
-  // SEMICOLON PAUSES - Medium pause
-  ssml = ssml.replace(/;(\s+)/g, ';<break strength="medium" time="600ms"/>$1');
 
   return `<speak>${ssml}</speak>`;
 }
@@ -130,6 +125,11 @@ function textToSSML(text) {
 
 async function synthesizeChunk(text, chunkIndex) {
   try {
+    // Skip pause markers
+    if (text === '[PAUSE_2000ms]') {
+      return Buffer.from('');
+    }
+
     const ssml = textToSSML(text);
     const ssmlSize = Buffer.byteLength(ssml, 'utf8');
 
@@ -163,7 +163,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'LBC Blog TTS Render Backend',
-    version: '3.0.0',
+    version: '3.1.0',
   });
 });
 
@@ -226,7 +226,7 @@ app.post('/api/blog/generate-audio', async (req, res) => {
         .then(audioBuffer => {
           audioChunks[index] = {
             index: index,
-            audioBase64: audioBuffer.toString('base64'),
+            audioBase64: audioBuffer.length > 0 ? audioBuffer.toString('base64') : '',
             textLength: chunk.length,
           };
           console.log(`✅ Chunk ${index + 1}/${chunks.length} ready`);
@@ -243,12 +243,15 @@ app.post('/api/blog/generate-audio', async (req, res) => {
     // Sort to ensure correct order (in case they finish out of order)
     audioChunks.sort((a, b) => a.index - b.index);
 
-    console.log(`\n✅ All ${audioChunks.length} chunks generated in ${Date.now() - startTime}ms\n`);
+    // Filter out empty chunks (pause markers)
+    const validChunks = audioChunks.filter(c => c.audioBase64 || c.audioBase64 === '');
+
+    console.log(`\n✅ All ${validChunks.length} chunks generated in ${Date.now() - startTime}ms\n`);
 
     res.json({
       success: true,
-      audioChunks: audioChunks,
-      totalChunks: audioChunks.length,
+      audioChunks: validChunks,
+      totalChunks: validChunks.length,
       totalChars: content.length,
       generationTime: Date.now() - startTime,
     });
@@ -267,7 +270,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await initializeGoogle();
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 LBC Blog TTS Render Backend v3.0 running on port ${PORT}`);
+    console.log(`\n🚀 LBC Blog TTS Render Backend v3.1 running on port ${PORT}`);
     console.log(`📍 Health: http://localhost:${PORT}/health`);
     console.log(`📍 Generate: POST http://localhost:${PORT}/api/blog/generate-audio\n`);
   });
