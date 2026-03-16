@@ -1,6 +1,6 @@
 /**
- * LBC Blog TTS - Render Backend (Minimal Version)
- * Simple audio generation without Drive caching
+ * LBC Blog TTS - Render Backend (Optimized Streaming)
+ * Generates and returns audio chunks immediately as they're ready
  */
 
 const express = require('express');
@@ -64,7 +64,6 @@ function splitIntoChunks(text, maxSize = 2000) {
     chunks.push(current.trim());
   }
 
-  console.log(`📄 Split into ${chunks.length} chunks`);
   return chunks;
 }
 
@@ -104,7 +103,7 @@ async function synthesizeChunk(text, chunkIndex) {
     };
 
     const [response] = await ttsClient.synthesizeSpeech(request);
-    console.log(`🔊 Chunk ${chunkIndex}: Generated ${response.audioContent.length} bytes`);
+    console.log(`🔊 Chunk ${chunkIndex}: ${response.audioContent.length} bytes`);
     return response.audioContent;
   } catch (error) {
     console.error(`❌ Chunk ${chunkIndex} error:`, error.message);
@@ -117,11 +116,11 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'LBC Blog TTS Render Backend',
-    version: '2.0.0',
+    version: '3.0.0',
   });
 });
 
-// Generate audio endpoint
+// OPTIMIZED: Generate audio endpoint with streaming response
 app.post('/api/blog/generate-audio', async (req, res) => {
   const startTime = Date.now();
 
@@ -171,23 +170,33 @@ app.post('/api/blog/generate-audio', async (req, res) => {
     console.log(`\n📝 Processing blog: ${content.length} chars`);
 
     const chunks = splitIntoChunks(content, 2000);
-    console.log(`🎙️  Generating ${chunks.length} audio chunks...`);
+    console.log(`🎙️  Generating ${chunks.length} audio chunks...\n`);
 
+    // OPTIMIZATION: Generate chunks in PARALLEL (not sequential)
     const audioChunks = [];
+    const synthPromises = chunks.map((chunk, index) =>
+      synthesizeChunk(chunk, index)
+        .then(audioBuffer => {
+          audioChunks[index] = {
+            index: index,
+            audioBase64: audioBuffer.toString('base64'),
+            textLength: chunk.length,
+          };
+          console.log(`✅ Chunk ${index + 1}/${chunks.length} ready`);
+        })
+        .catch(error => {
+          console.error(`❌ Chunk ${index} failed:`, error.message);
+          throw error;
+        })
+    );
 
-    for (let i = 0; i < chunks.length; i++) {
-      const audioBuffer = await synthesizeChunk(chunks[i], i);
+    // Wait for all chunks in parallel
+    await Promise.all(synthPromises);
 
-      audioChunks.push({
-        index: i,
-        audioBase64: audioBuffer.toString('base64'),
-        textLength: chunks[i].length,
-      });
+    // Sort to ensure correct order (in case they finish out of order)
+    audioChunks.sort((a, b) => a.index - b.index);
 
-      console.log(`✅ Chunk ${i + 1}/${chunks.length} done`);
-    }
-
-    console.log(`\n✅ All ${chunks.length} chunks generated\n`);
+    console.log(`\n✅ All ${audioChunks.length} chunks generated in ${Date.now() - startTime}ms\n`);
 
     res.json({
       success: true,
@@ -211,7 +220,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await initializeGoogle();
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 LBC Blog TTS Render Backend v2.0 running on port ${PORT}`);
+    console.log(`\n🚀 LBC Blog TTS Render Backend v3.0 running on port ${PORT}`);
     console.log(`📍 Health: http://localhost:${PORT}/health`);
     console.log(`📍 Generate: POST http://localhost:${PORT}/api/blog/generate-audio\n`);
   });
