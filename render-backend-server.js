@@ -1,6 +1,6 @@
 /**
- * LBC Blog TTS - Render Backend (FINAL VERSION)
- * Reads BLESKIN EXXO properly, % as percent, breaks after titles/subtitles/bullets
+ * LBC Blog TTS - Render Backend (FIXED % AND $)
+ * Reads % as "percent" and $ as "dollar" with proper spacing
  */
 
 const express = require('express');
@@ -82,39 +82,59 @@ function splitIntoChunks(text, maxSize = 2000) {
 }
 
 function textToSSML(text) {
-  let ssml = text
-    // FIRST: Replace special characters with words BEFORE XML escaping
-    .replace(/%/g, ' percent ')
-    .replace(/\$/g, ' dollar ')
-    .replace(/#/g, ' number ')
-    // Add spaces between ALL CAPS words (like BLESKIN EXXO)
-    // Pattern: uppercase letters followed by Uppercase then lowercase
-    .replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1 $2')
-    // Add spaces between words and numbers
-    .replace(/([a-z])(\d)/gi, '$1 $2')
-    .replace(/(\d)([a-z])/gi, '$1 $2')
-    // NOW: Escape XML special chars
-    .replace(/&/g, '&amp;')
+  let ssml = text;
+
+  // REPLACE % with "percent" - add spaces around it
+  // Pattern: number % (like "50%")
+  ssml = ssml.replace(/(\d+)\%/g, '$1 percent');
+  // Pattern: % followed by word (like "%OFF")
+  ssml = ssml.replace(/\%([A-Za-z])/g, 'percent $1');
+  // Pattern: word followed by % (like "DISCOUNT%")
+  ssml = ssml.replace(/([A-Za-z])\%/g, '$1 percent');
+  
+  // REPLACE $ with "dollar" or "dollars" - add spaces around it
+  // Pattern: $number (like "$100")
+  ssml = ssml.replace(/\$(\d+)/g, '$1 dollars');
+  // Pattern: $ followed by word (like "$OFF")
+  ssml = ssml.replace(/\$([A-Za-z])/g, 'dollar $1');
+  // Pattern: word followed by $ (like "PRICE$")
+  ssml = ssml.replace(/([A-Za-z])\$/g, '$1 dollar');
+
+  // REPLACE # with "number" - add spaces
+  // Pattern: #number (like "#1")
+  ssml = ssml.replace(/#(\d+)/g, 'number $1');
+  // Pattern: # followed by word
+  ssml = ssml.replace(/#([A-Za-z])/g, 'number $1');
+
+  // Add spaces between ALL CAPS words (like BLESKIN EXXO)
+  ssml = ssml.replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1 $2');
+  
+  // Add spaces between words and numbers
+  ssml = ssml.replace(/([a-z])(\d)/gi, '$1 $2');
+  ssml = ssml.replace(/(\d)([a-z])/gi, '$1 $2');
+
+  // NOW: Escape XML special chars
+  ssml = ssml.replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-  // TITLE BREAKS - Add strong pause AFTER titles (first line)
+  // TITLE BREAKS
   ssml = ssml.replace(/^([A-Z][A-Za-z0-9\s]{5,80})(\n)/gm, '$1<break strength="x-strong" time="1500ms"/>\n');
 
-  // SUBTITLE BREAKS - Add pause AFTER subtitles (second line)
+  // SUBTITLE BREAKS
   ssml = ssml.replace(/^([A-Z][A-Za-z0-9\s]{5,80})(\n)(?=[A-Z])/gm, '$1<break strength="strong" time="1200ms"/>\n');
 
-  // BULLET POINT BREAKS - Pause AFTER each bullet point
+  // BULLET POINT BREAKS
   ssml = ssml.replace(/([-•*][^\n]+)(\n)/gm, '$1<break strength="medium" time="800ms"/>$2');
 
-  // PARAGRAPH BREAKS - Long pause between paragraphs
+  // PARAGRAPH BREAKS
   ssml = ssml.replace(/\n\n+/g, '<break strength="strong" time="1000ms"/>');
 
-  // SENTENCE ENDINGS - Pause after period, exclamation, question mark
+  // SENTENCE ENDINGS
   ssml = ssml.replace(/([.!?])(\s+)(?=[A-Z])/g, '$1<break time="600ms"/>$2');
 
-  // COMMA PAUSES - Slight pause at commas
+  // COMMA PAUSES
   ssml = ssml.replace(/,(\s+)/g, ',<break time="250ms"/>$1');
 
   return `<speak>${ssml}</speak>`;
@@ -158,7 +178,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'LBC Blog TTS Render Backend',
-    version: '3.2.0',
+    version: '3.3.0',
   });
 });
 
@@ -257,7 +277,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await initializeGoogle();
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 LBC Blog TTS Render Backend v3.2 running on port ${PORT}`);
+    console.log(`\n🚀 LBC Blog TTS Render Backend v3.3 running on port ${PORT}`);
     console.log(`📍 Health: http://localhost:${PORT}/health`);
     console.log(`📍 Generate: POST http://localhost:${PORT}/api/blog/generate-audio\n`);
   });
