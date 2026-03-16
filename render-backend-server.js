@@ -1,6 +1,6 @@
 /**
- * LBC Blog TTS - Render Backend (Final Clean Version)
- * Removes titles/subtitles before processing - reads ONLY main content
+ * LBC Blog TTS - Render Backend (COMBINED AUDIO)
+ * Generates all chunks and combines into ONE MP3 file
  */
 
 const express = require('express');
@@ -46,25 +46,11 @@ function splitIntoChunks(text, maxSize = 2000) {
   const chunks = [];
   let current = '';
 
-  // REMOVE TITLES AND SUBTITLES - Don't read them
-  // This removes lines that look like titles/subtitles
-  let cleanedText = text
-    // Remove all-caps titles (like "PCOS & HAIR GROWTH")
-    .replace(/^[A-Z][A-Z\s]{10,100}$/gm, '')
-    // Remove Title Case lines (short lines that are titles)
-    .replace(/^([A-Z][a-z]*(?:\s+[A-Z][a-z]*)*){2,}$/gm, '')
-    // Remove single sentence lines that are too short (likely titles)
-    .replace(/^[A-Z][^.!?]{5,80}$/gm, '')
-    // Clean up extra newlines left behind
-    .replace(/\n\n+/g, '\n\n')
-    .trim();
-
-  // Split by sentences
-  const sentences = cleanedText.match(/[^.!?]*[.!?]+/g) || [cleanedText];
+  const sentences = text.match(/[^.!?]*[.!?]+/g) || [text];
 
   for (const sentence of sentences) {
     const trimmed = sentence.trim();
-    if (!trimmed || trimmed.length < 20) continue;
+    if (!trimmed) continue;
 
     if (current.length + trimmed.length > maxSize && current.length > 0) {
       chunks.push(current.trim());
@@ -78,7 +64,6 @@ function splitIntoChunks(text, maxSize = 2000) {
     chunks.push(current.trim());
   }
 
-  console.log(`📄 Split into ${chunks.length} chunks (titles/subtitles removed)`);
   return chunks;
 }
 
@@ -139,19 +124,22 @@ async function synthesizeChunk(text, chunkIndex) {
   }
 }
 
+// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'LBC Blog TTS Render Backend',
-    version: '3.1.0',
+    version: '4.0.0',
   });
 });
 
+// Generate combined audio endpoint
 app.post('/api/blog/generate-audio', async (req, res) => {
   const startTime = Date.now();
 
   try {
     const { blogContent, blogText, blogUrl, blogPostId } = req.body;
+
     const textContent = blogContent || blogText;
 
     if (!textContent && !blogUrl) {
@@ -197,16 +185,12 @@ app.post('/api/blog/generate-audio', async (req, res) => {
     const chunks = splitIntoChunks(content, 2000);
     console.log(`🎙️  Generating ${chunks.length} audio chunks...\n`);
 
-    // Generate chunks IN PARALLEL for speed
-    const audioChunks = [];
+    // Generate all chunks IN PARALLEL
+    const audioBuffers = [];
     const synthPromises = chunks.map((chunk, index) =>
       synthesizeChunk(chunk, index)
         .then(audioBuffer => {
-          audioChunks[index] = {
-            index: index,
-            audioBase64: audioBuffer.length > 0 ? audioBuffer.toString('base64') : '',
-            textLength: chunk.length,
-          };
+          audioBuffers[index] = audioBuffer;
           console.log(`✅ Chunk ${index + 1}/${chunks.length} ready`);
         })
         .catch(error => {
@@ -217,17 +201,17 @@ app.post('/api/blog/generate-audio', async (req, res) => {
 
     await Promise.all(synthPromises);
 
-    // Sort to ensure correct order
-    audioChunks.sort((a, b) => a.index - b.index);
-    // Filter out empty chunks
-    const validChunks = audioChunks.filter(c => c.audioBase64);
+    // COMBINE ALL CHUNKS INTO ONE MP3 FILE
+    console.log(`\n🔗 Combining ${audioBuffers.length} chunks into one audio file...`);
+    const combinedAudio = Buffer.concat(audioBuffers.filter(b => b.length > 0));
 
-    console.log(`\n✅ All ${validChunks.length} chunks generated in ${Date.now() - startTime}ms\n`);
+    console.log(`✅ Combined audio size: ${combinedAudio.length} bytes`);
+    console.log(`✅ Total generation time: ${Date.now() - startTime}ms\n`);
 
     res.json({
       success: true,
-      audioChunks: validChunks,
-      totalChunks: validChunks.length,
+      audioBase64: combinedAudio.toString('base64'),  // ONE complete audio file
+      totalChunks: audioBuffers.length,
       totalChars: content.length,
       generationTime: Date.now() - startTime,
     });
@@ -246,7 +230,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await initializeGoogle();
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 LBC Blog TTS Render Backend v3.1 running on port ${PORT}`);
+    console.log(`\n🚀 LBC Blog TTS Render Backend v4.0 running on port ${PORT}`);
     console.log(`📍 Health: http://localhost:${PORT}/health`);
     console.log(`📍 Generate: POST http://localhost:${PORT}/api/blog/generate-audio\n`);
   });
