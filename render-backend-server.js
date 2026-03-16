@@ -1,6 +1,6 @@
 /**
- * LBC Blog TTS - Render Backend (Optimized Streaming)
- * IMPROVED: % reads as percent, breaks after titles/subtitles/bullets
+ * LBC Blog TTS - Render Backend (FINAL VERSION)
+ * Reads BLESKIN EXXO properly, % as percent, breaks after titles/subtitles/bullets
  */
 
 const express = require('express');
@@ -46,21 +46,17 @@ function splitIntoChunks(text, maxSize = 2000) {
   const chunks = [];
   let current = '';
 
-  // FIRST: Split on major sections (titles/subtitles followed by content)
-  // Detect lines that are titles/subtitles (short, all caps or title case at start of line)
   const sections = text.split(/\n(?=[A-Z][A-Za-z\s]{3,80}(?:\n|$))/);
 
   for (const section of sections) {
     if (!section.trim()) continue;
 
-    // WITHIN each section: split by sentences
     const sentences = section.match(/[^.!?]*[.!?]+/g) || [section];
 
     for (const sentence of sentences) {
       const trimmed = sentence.trim();
       if (!trimmed) continue;
 
-      // If adding this sentence would exceed maxSize, start a new chunk
       if (current.length + trimmed.length > maxSize && current.length > 0) {
         chunks.push(current.trim());
         current = trimmed;
@@ -69,18 +65,14 @@ function splitIntoChunks(text, maxSize = 2000) {
       }
     }
 
-    // End of section - if there's content, add it as a chunk
     if (current.trim()) {
       chunks.push(current.trim());
       current = '';
     }
 
-    // ADD A PAUSE BETWEEN SECTIONS (empty chunk creates 2 second gap)
-    // This forces the frontend to pause between title/subtitle and content
     chunks.push('[PAUSE_2000ms]');
   }
 
-  // Remove trailing pause
   if (chunks.length > 0 && chunks[chunks.length - 1] === '[PAUSE_2000ms]') {
     chunks.pop();
   }
@@ -95,6 +87,12 @@ function textToSSML(text) {
     .replace(/%/g, ' percent ')
     .replace(/\$/g, ' dollar ')
     .replace(/#/g, ' number ')
+    // Add spaces between ALL CAPS words (like BLESKIN EXXO)
+    // Pattern: uppercase letters followed by Uppercase then lowercase
+    .replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1 $2')
+    // Add spaces between words and numbers
+    .replace(/([a-z])(\d)/gi, '$1 $2')
+    .replace(/(\d)([a-z])/gi, '$1 $2')
     // NOW: Escape XML special chars
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -122,10 +120,8 @@ function textToSSML(text) {
   return `<speak>${ssml}</speak>`;
 }
 
-
 async function synthesizeChunk(text, chunkIndex) {
   try {
-    // Skip pause markers
     if (text === '[PAUSE_2000ms]') {
       return Buffer.from('');
     }
@@ -158,22 +154,19 @@ async function synthesizeChunk(text, chunkIndex) {
   }
 }
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'LBC Blog TTS Render Backend',
-    version: '3.1.0',
+    version: '3.2.0',
   });
 });
 
-// OPTIMIZED: Generate audio endpoint with streaming response
 app.post('/api/blog/generate-audio', async (req, res) => {
   const startTime = Date.now();
 
   try {
     const { blogContent, blogText, blogUrl, blogPostId } = req.body;
-
     const textContent = blogContent || blogText;
 
     if (!textContent && !blogUrl) {
@@ -188,7 +181,6 @@ app.post('/api/blog/generate-audio', async (req, res) => {
       try {
         const response = await fetch(blogUrl);
         const html = await response.text();
-
         const match = html.match(
           /<div[^>]*class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*?)<\/div>/i
         );
@@ -219,7 +211,6 @@ app.post('/api/blog/generate-audio', async (req, res) => {
     const chunks = splitIntoChunks(content, 2000);
     console.log(`🎙️  Generating ${chunks.length} audio chunks...\n`);
 
-    // OPTIMIZATION: Generate chunks in PARALLEL (not sequential)
     const audioChunks = [];
     const synthPromises = chunks.map((chunk, index) =>
       synthesizeChunk(chunk, index)
@@ -237,13 +228,9 @@ app.post('/api/blog/generate-audio', async (req, res) => {
         })
     );
 
-    // Wait for all chunks in parallel
     await Promise.all(synthPromises);
 
-    // Sort to ensure correct order (in case they finish out of order)
     audioChunks.sort((a, b) => a.index - b.index);
-
-    // Filter out empty chunks (pause markers)
     const validChunks = audioChunks.filter(c => c.audioBase64 || c.audioBase64 === '');
 
     console.log(`\n✅ All ${validChunks.length} chunks generated in ${Date.now() - startTime}ms\n`);
@@ -270,7 +257,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await initializeGoogle();
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 LBC Blog TTS Render Backend v3.1 running on port ${PORT}`);
+    console.log(`\n🚀 LBC Blog TTS Render Backend v3.2 running on port ${PORT}`);
     console.log(`📍 Health: http://localhost:${PORT}/health`);
     console.log(`📍 Generate: POST http://localhost:${PORT}/api/blog/generate-audio\n`);
   });
