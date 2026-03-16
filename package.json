@@ -1,16 +1,39 @@
 {
   "name": "lbc-blog-tts-api",
-  "version": "1.0.0",
-  "description": "Blog TTS API with Google Cloud Text-to-Speech",
-  "main": "index.js",
-  "type": "module",
+  "version": "2.0.0",
+  "description": "LBC Blog TTS - Secure blog Text-to-Speech API with Google Cloud TTS and Drive caching",
+  "main": "render-backend-server.js",
+  "type": "commonjs",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "build": "echo 'Build complete'"
+    "start": "node render-backend-server.js",
+    "dev": "node render-backend-server.js",
+    "test": "curl http://localhost:3000/health"
   },
+  "keywords": [
+    "tts",
+    "text-to-speech",
+    "google-cloud",
+    "render",
+    "wordpress",
+    "blog",
+    "audio",
+    "cache",
+    "google-drive"
+  ],
+  "author": "Lady's Beauty Care",
+  "license": "MIT",
   "dependencies": {
-    "wrangler": "^3.114.17"
+    "@google-cloud/text-to-speech": "^5.1.0",
+    "googleapis": "^118.0.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
   },
-  "devDependencies": {}
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ladysbeautycare/lbc-blog-tts-api.git"
+  }
 }
